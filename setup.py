@@ -5,14 +5,14 @@ with open('README.md', 'r') as fh:
 
 setuptools.setup(
     name='pyopm',
-    version='0.0.1',
+    version='0.0.2',
     author='Rodney Meredith McKay',
     # author_email='',
     description='Object Pattern Matching for Python 3',
     long_description=long_description,
     long_description_content_type='text/markdown',
     url='https://github.com/ep12/PyOPM',
-    packages=setuptools.find_packages(where='pyopm'),
+    packages=setuptools.find_packages(),
     license='GNU LGPL v3',
     keywords=[
         'object patterns',
