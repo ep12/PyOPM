@@ -1,11 +1,22 @@
 """Implement basic Object Pattern Matching functionality."""
 import re
 import functools
+import typing as T
 from warnings import warn
 import inspect
 
 from pprint import pformat
 from textwrap import indent
+
+cproperty = (functools.cached_property if hasattr(functools, 'cached_property')
+             else property)
+FrameType = inspect.types.FrameType
+
+
+CONFIG = {
+    'with block/changed existing': 'restore',  # restore, keep
+    'with block/changed non-existing': 'delete',  # delete, keep
+}
 
 
 def break_attr_path(path: str):
@@ -17,6 +28,33 @@ def break_attr_path(path: str):
             continue
         parts.append(tmp + x)
     return tuple(parts)
+
+
+def _start_block(frame: FrameType, bind: dict) -> T.Tuple[FrameType, dict]:
+    existing = {k: v for k, v in frame.f_globals.items() if k in bind}
+    frame.f_globals.update(bind)
+    return frame, existing
+
+
+def _end_block(frame: FrameType, bind: dict, original_values: dict, config: dict):
+    unchanged_non_existing = {k for k, v in frame.f_globals.items()
+                              if k in bind and v == bind[k] and k not in original_values}
+    unchanged_existing = {k for k, v in frame.f_globals.items()
+                          if k in bind and v == bind[k] and k in original_values}
+    changed_non_existing = {k for k, v in frame.f_globals.items()
+                            if k in bind and v != bind[k] and k not in original_values}
+    changed_existing = {k for k, v in frame.f_globals.items()
+                        if k in bind and v != bind[k] and k in original_values}
+    for k in unchanged_non_existing:
+        frame.f_globals.pop(k, None)
+    for k in unchanged_existing:
+        frame.f_globals[k] = original_values[k]
+    if config.get('with block/changed non-existing', 'delete') == 'delete':
+        for k in changed_non_existing:
+            frame.f_globals.pop(k, None)
+    if config.get('with block/changed existing', 'restore') == 'restore':
+        for k in changed_existing:
+            frame.f_globals[k] = original_values[k]
 
 
 class NoMatchingPatternError(ValueError):
@@ -34,9 +72,11 @@ class ObjectPattern:  # pylint: disable=missing-class-docstring,too-few-public-m
 class ObjectPatternMatch:
     """A match corresponding to a (pattern, object) pair."""
 
-    def __init__(self, obj: object, pattern: ObjectPattern, bound: dict):
+    def __init__(self, obj: object, pattern: ObjectPattern, bound: dict,
+                 config: T.Optional[dict] = None):
         self.obj, self.pattern = obj, pattern
         self.bound = bound
+        self.config = config if isinstance(config, dict) else CONFIG
 
     def __bool__(self):
         return True
@@ -48,28 +88,24 @@ class ObjectPatternMatch:
         return f'<ObjectPatternMatch bindings={self.bound!r}/>'
 
     def __enter__(self):
-        # W0201: attribute-defined-outside-init
-        self.__f = inspect.currentframe()  # pylint: disable=W0201
-        self.__existing_globals = dict(  # pylint: disable=W0201
-            filter(lambda t: t[0] in self.bound,
-                   self.__f.f_globals))
-        self.__f.f_globals.update(self.bound)
+        # pylint: disable=attribute-defined-outside-init
+        self.__f, self.__existing = _start_block(inspect.currentframe().f_back, self.bound)
         return self
 
     def __exit__(self, exc_type, exc_value, trb):
-        for k in self.bound:
-            self.__f.f_globals.pop(k, None)
-        self.__f.f_globals.update(self.__existing_globals)
-        del(self.__f, self.__existing_globals)
+        _end_block(self.__f, self.bound, self.__existing, self.config)
+        del(self.__f, self.__existing)
         # Do we need to handle exc_type, exc_value, traceback?
 
 
 class ObjectPattern:
     """A pattern that can be applied to any object."""
 
-    def __init__(self, pattern: dict, verbose: bool = False):
+    def __init__(self, pattern: dict, verbose: bool = False,
+                 config: T.Optional[dict] = None):
         assert isinstance(pattern, dict)
         self.pattern, self.verbose = pattern, verbose
+        self.config = config if isinstance(config, dict) else CONFIG
 
     def __str__(self):
         return ('<ObjectPattern \n'
@@ -77,9 +113,9 @@ class ObjectPattern:
                 + '\n/>')
 
     def __repr__(self):
-        return f'<ObjectPattern({pformat(self.pattern)})'
+        return f'<ObjectPattern({pformat(self.pattern)}) />'
 
-    @functools.cached_property
+    @cproperty
     def compiled_pattern(self):
         """Split the keys into attribute path bits."""
         return {break_attr_path(k): v for k, v in self.pattern.items()}
@@ -127,4 +163,53 @@ class ObjectPattern:
                                    (eval(var_eval, eval_globals, {**eval_locals, 'o': o})
                                     if isinstance(var_eval, str) else o))
 
-        return ObjectPatternMatch(obj, self, bound)
+        return ObjectPatternMatch(obj, self, bound, self.config)
+
+
+class ObjectMultiPattern:
+    """Implement matching against multiple patterns functionality."""
+    # TODO: match method?
+
+    def __init__(self, obj: object, *patterns: ObjectPattern,
+                 allow_ambiguities: bool = False, config: T.Optional[dict] = None,
+                 **match_args):
+        self.obj = obj
+        self.patterns = list(patterns)
+        self.matches = [p.match(obj, **match_args) for p in self.patterns]
+        self.match = None
+        self.allow_ambiguities = allow_ambiguities
+        self.config = config if isinstance(config, dict) else CONFIG
+
+    @cproperty
+    def successful_matches(self):
+        """A dictionary containing all the successfull matches."""
+        return dict(filter(lambda t: isinstance(t[1], ObjectPatternMatch),
+                           enumerate(self.matches)))
+
+    def __len__(self):
+        return len(self.successful_matches)
+
+    def __bool__(self):
+        return len(self) == 1
+
+    def __enter__(self):
+        if len(self) > 1:
+            if self.allow_ambiguities:
+                warn(f'Ambiguity: {len(self)} patterns matched!')
+            else:
+                raise AmbiguityError(f'{self.obj!r} matched {len(self)} patterns!')
+        elif not self:
+            raise NoMatchingPatternError(f'{self.obj!r} did not match any pattern!')
+        self.match = min(self.successful_matches.items())[1]
+        # W0201: attribute-defined-outside-init
+        self.__f, self.__existing = _start_block(inspect.currentframe().f_back, self.match.bound)
+        return self
+
+    def __exit__(self, exc_type, exc_value, trb):
+        _end_block(self.__f, self.match.bound, self.__existing, self.config)
+        del(self.__f, self.__existing)
+        # Do we need to handle exc_type, exc_value, traceback?
+
+
+matcher_pattern = ObjectPattern({'obj.match': {'eval': [callable]}})
+# matches re.Pattern, ObjectPattern, ...
