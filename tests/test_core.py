@@ -1,10 +1,26 @@
 # pylint: disable=undefined-variable,import-error,
+import os
+import sys
+cwd = os.path.realpath('.')
+if cwd not in sys.path:
+    sys.path.insert(0, cwd)
+
 import re
-from pyopm.core import ObjectPattern, ObjectPatternMatch, ObjectMultiPattern, matcher_pattern
+import pytest
+import inspect
+
+import pyopm
+from pyopm.core import (ObjectPattern, ObjectPatternMatch, ObjectMultiPattern, matcher_pattern,
+                        AmbiguityError, NoMatchingPatternError)
 
 
-def test_basic_1():
-    """Test ObjectPattern."""
+def test_start_end_block():
+    # TODO
+    ...
+
+
+def test_object_pattern_basic():
+    """Test ObjectPattern (basic use cases)."""
     pattern = ObjectPattern({
         'obj': {
             'eval': [lambda o: callable(o) or o is None]
@@ -25,7 +41,15 @@ def test_basic_1():
     assert m3 is None
     assert bool(m1)
     assert bool(m2)
+    # print('Before:', inspect.currentframe())
+    # print(id(inspect.currentframe().f_locals))
     with m1:
+        # f = inspect.currentframe()
+        # print('InsideBefore:', f)
+        # print('Inside frame locals', f.f_locals.keys())
+        # print('f_locals id', id(f.f_locals))
+        assert 'obj_type' in globals()
+        # print('locals():', locals().keys())
         assert obj_type == type(None)
         assert isinstance(obj_type_str, str)
         assert docstring == None.__doc__
@@ -35,7 +59,82 @@ def test_basic_1():
         assert docstring == ObjectPattern.__doc__
 
 
-def test_basic_2():
+def test_object_pattern_special_cases():
+    """Test ObjectPattern (errors and warnings)"""
+    p2 = ObjectPattern({'obj.keys': {'bind': {'keys': lambda o: list(o())}}})
+    assert p2.match(None) is None
+
+    p2.verbose = True
+    with pytest.warns(UserWarning) as e:
+        assert p2.match(None) is None
+    assert e[0].message.args[0] == ("Missing attribute? 'obj.keys', "
+                                    "'NoneType' object has no attribute 'keys'")
+
+    def tf(o):
+        return isinstance(o(), list)
+    p3 = ObjectPattern({'obj.keys': {'eval': [tf]}}, verbose=True)
+    d = {0: 1}
+    with pytest.warns(UserWarning) as e:
+        assert p3.match(d) is None
+    assert e[0].message.args[0] == f"Test failed: {tf!r} (('obj', '.keys'): {d.keys!r})"
+
+    def tf(o):
+        raise ValueError('DEAD')
+    p4 = ObjectPattern({'obj.keys': {'eval': [tf]}}, verbose=True)
+    with pytest.warns(UserWarning) as e:
+        assert p4.match(d) is None
+    assert e[0].message.args[0] == (f"Error running {tf!r} (('obj', '.keys'):"
+                                    f" {d.keys!r}): {ValueError('DEAD')}")
+
+    p5 = ObjectPattern({'obj.keys': {'bind': {'keys': lambda o: list(o())}},
+                        'obj.values': {'bind': {'keys': lambda o: list(o())}}},
+                       verbose=True)
+    with pytest.warns(UserWarning) as e:
+        assert p5.match(d) is not None
+    assert e[0].message.args[0] == f"Overwriting binding for 'keys'"
+
+
+def test_object_pattern_context_handler():
+    class Dummy:
+        def __init__(self, a, b, c, d, e):
+            self.a, self.b, self.c, self.d, self.e = a, b, c, d, e
+
+    p = ObjectPattern({
+        'obj': {'eval': [lambda x: isinstance(x, Dummy)]},
+        'obj.a': {'bind': {'a': None}},
+        'obj.b': {'bind': {'b': None}},
+        'obj.c': {'bind': {'c': None}},
+        'obj.d': {'bind': {'d': None}},
+        'obj.e': {'bind': {'e': None}}
+    })
+    o = Dummy('This', 'is', 1, 'stupid', 'test')
+    m = p.match(o)
+    a = 'That'
+    d = 'smart'
+    # print(set(globals().keys()) & {'a', 'b', 'c', 'd', 'e'})
+    with pytest.warns(UserWarning):
+        with m:
+            # global b, c, e
+            with pytest.raises(UnboundLocalError) as err:
+                print(c)  # pylint: disable=used-before-assignment
+            assert err.value.args[0] == "local variable 'c' referenced before assignment"
+            c = m.bound['c']
+            print(a, b, c, d, e)  # pylint: disable=used-before-assignment
+            c = 'a'
+            a = 'Dis'
+            print(a, b, c, d, e)
+            print('__exit__')
+    with pytest.raises(NameError):
+        print(b)
+    # with pytest.raises(NameError):  # BUG: broken #assignlocal
+    #     print(c)
+    with pytest.raises(NameError):
+        print(e)
+    # assert a == 'That'  # BUG: broken #assignlocal
+    # assert d == 'smart'  # BUG: broken #assignlocal
+
+
+def test_basic_object_multi_pattern():
     """Test ObjectMultiPattern."""
     p1 = ObjectPattern({
         'obj': {
@@ -72,6 +171,49 @@ def test_basic_2():
             assert keys == [0, 1, 2]
             assert values == ['zero', 'one', 'two']
 
+    p3 = ObjectPattern({'obj': {'eval': [lambda o: isinstance(o, list)]}})
+    with pytest.warns(UserWarning) as e:
+        with ObjectMultiPattern(o1, p1, p2, p3, allow_ambiguities=True):
+            pass
+    assert e[0].message.args[0] == 'Ambiguity: 2 patterns matched!'
+
+    with pytest.raises(AmbiguityError) as e:
+        with ObjectMultiPattern(o1, p1, p2, p3, allow_ambiguities=False):
+            pass
+    assert e.value.args[0] == f'{o1!r} matched 2 patterns!'
+
+    with pytest.raises(NoMatchingPatternError) as e:
+        with ObjectMultiPattern(None, p1, p2, p3):
+            pass
+    assert e.value.args[0] == f'{None!r} did not match any pattern!'
+
+
+def test_str_repr():
+    p = ObjectPattern({})
+    p2 = ObjectPattern({'obj': {'eval': [callable]}})
+    assert str(p) == '<ObjectPattern \n    {}\n/>'
+    assert repr(p) == '<ObjectPattern({}) />'
+    m = p.match(None)
+    assert str(m) == '<ObjectPatternMatch bindings={}/>'
+    assert repr(m) == 'ObjectPatternMatch(None, <ObjectPattern({}) />, {})'
+    # mp = ObjectMultiPattern(str, p2, p, allow_ambiguities=True)
+    # assert str(mp) == 
+
+
+def test_context_handler():
+    p = ObjectPattern({
+        'obj.keys': {'eval': [lambda o: all(isinstance(x, int) for x in o())],
+                     'bind': {'keys': lambda o: o()}},
+        'obj.values': {'bind': {'values': lambda o: o()}},
+        'obj.items': {'bind': {'items': lambda o: o()}},
+    })
+    m = p.match({0: 1, 1: 'two', 2: 3.0})
+    values = []
+    with pytest.warns(UserWarning):
+        with m:
+            keys = [0, 1, 2]  # BUG: #assignlocal
+            values = [1, 'two', 3.0]
+
 
 def test_meta_match():
     """Test the matcher_pattern."""
@@ -79,3 +221,31 @@ def test_meta_match():
     # assert bool(matcher_pattern.match(ObjectMultiPattern))
     if hasattr(re, 'Pattern'):
         assert bool(matcher_pattern.match(re.Pattern))
+
+
+if __name__ == '__main__':
+    print(pyopm)
+    import dis
+    # test_start_end_block()
+    print('== test_object_pattern_basic')
+    test_object_pattern_basic()
+    print('== test_object_special_cases')
+    test_object_pattern_special_cases()
+    #
+    d = dis.Bytecode(test_object_pattern_context_handler)
+    print(d.dis())
+    print('names    GLOBAL : ', d.codeobj.co_names)
+    print('varnames FAST   : ', d.codeobj.co_varnames)
+    print('cellvars CLOSURE: ', d.codeobj.co_cellvars)
+    print('freevars DEREF  : ', d.codeobj.co_freevars)
+    #
+    print('== test_object_context_handler')
+    test_object_pattern_context_handler()
+    print('== test_object_multi_pattern')
+    test_basic_object_multi_pattern()
+    print('== test_str_repr')
+    test_str_repr()
+    print('== test_context_handler')
+    test_context_handler()
+    print('== test_meta_match')
+    test_meta_match()
