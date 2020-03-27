@@ -5,7 +5,7 @@ with open('README.md', 'r') as fh:
 
 setuptools.setup(
     name='pyopm',
-    version='0.0.2',
+    version='0.0.3',
     author='Rodney Meredith McKay',
     # author_email='',
     description='Object Pattern Matching for Python 3',
@@ -24,6 +24,10 @@ setuptools.setup(
     ],
     classifiers=[
         'Development Status :: 2 - Pre-Alpha',
+        # 'Development Status :: 3 - Alpha',
+        # 'Development Status :: 4 - Beta',
+        # 'Development Status :: 5 - Production/Stable',
+        # 'Development Status :: 6 - Mature',
         'Intended Audience :: Developers',
         'License :: OSI Approved',
         'License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)',
@@ -36,7 +40,8 @@ setuptools.setup(
         'Topic :: Software Development',
         'Topic :: Software Development :: Libraries',
         'Topic :: Utilities',
-        # 'Typing :: Typed'
+        # 'Typing :: Typed',
+        # 'Programming Language :: Python :: Implementation :: CPython',
     ],
     python_requires='>=3.6',
 )
