@@ -61,7 +61,13 @@ dict_values([0.2, 1])
 
 # Roadmap
 
-The next thing to implement: `SwitchBlock` (throw in any object with `my_switch_block.switch(obj)` and the appropriate function will be called)
+The next thing to implement: proper `with`  block handling
+
+## To Do
+
++ [ ] proper `with`  block handling (locals do not work)
++ [ ] SwitchBlock (throw in any object with `my_switch_block.switch(obj)` and the appropriate function will be called)
++ [ ] overload
 
 If you have any feature requests or suggestions, feel free to open an issue on [github](https://www.github.com/ep12/PyOPM). Of course, this also applies to bug reports and questions!
 
