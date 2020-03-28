@@ -5,7 +5,7 @@ with open('README.md', 'r') as fh:
 
 setuptools.setup(
     name='pyopm',
-    version='0.0.3',
+    version='0.0.4',
     author='Rodney Meredith McKay',
     # author_email='',
     description='Object Pattern Matching for Python 3',
@@ -20,6 +20,7 @@ setuptools.setup(
         'case statement',
         'match statement',
         'case', 'match',
+        'object destructuring',
         # 'overloading',
     ],
     classifiers=[
