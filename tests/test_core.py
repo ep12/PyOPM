@@ -1,22 +1,114 @@
 # pylint: disable=undefined-variable,import-error,
+import re
+import pytest
+
 import os
 import sys
+
+# make sure to import the version of PyOPM found in ./
+# instead of importing a stable version from /.../site-packages/
 cwd = os.path.realpath('.')
 if cwd not in sys.path:
     sys.path.insert(0, cwd)
-
-import re
-import pytest
-import inspect
 
 import pyopm
 from pyopm.core import (ObjectPattern, ObjectPatternMatch, ObjectMultiPattern, matcher_pattern,
                         AmbiguityError, NoMatchingPatternError)
 
 
-def test_start_end_block():
-    # TODO
-    ...
+CONFIG_DEFAULT = {
+    'changed existing': 'restore',  # restore (original value), keep (current value)
+    # 'changed non-existing': 'delete',  # delete, keep (current value)
+    'changed non-existing': 'keep',  # 'delete' would be better, but it does not work atm
+    'deleted existing': 'restore',  # restore (original value), ignore
+    'deleted non-existing': 'ignore',  # restore (bound value), ignore
+    'unchanged existing': 'restore',  # restore (original value), keep (bound value)
+    # 'unchanged non-existing': 'delete',  # delete, keep (bound value)
+    'unchanged non-existing': 'keep',  # 'delete' would be better, but it does not work atm
+}
+CONFIG_INVERSE = {
+    'changed existing': 'keep',  # restore (original value), keep (current value)
+    'changed non-existing': 'delete',  # delete, keep (current value)
+    'deleted existing': 'ignore',  # restore (original value), ignore
+    'deleted non-existing': 'restore',  # restore (bound value), ignore
+    'unchanged existing': 'keep',  # restore (original value), keep (bound value)
+    'unchanged non-existing': 'delete',  # delete, keep (bound value)
+}
+
+
+class DummyContext:
+    def __enter__(self):
+        pass
+
+    def __exit__(self, *a):
+        pass
+
+
+class Dummy6:
+    # pylint: disable=too-few-public-methods,missing-class-docstring
+    def __init__(self, a, b, c, d, e, f):
+        self.a, self.b, self.c, self.d, self.e, self.f = a, b, c, d, e, f
+
+
+PD6 = {'obj.a': {'bind': {'a': None}}, 'obj.b': {'bind': {'b': None}},
+       'obj.c': {'bind': {'c': None}}, 'obj.d': {'bind': {'d': None}},
+       'obj.e': {'bind': {'e': None}}, 'obj.f': {'bind': {'f': None}}}
+
+
+def test_start_end_block_default_cfg():
+    """Test _start_block and _end_block (default config)."""
+    o = Dummy6(1, 2, 3, 4, 5, 6)
+    p = ObjectPattern(PD6, config=CONFIG_DEFAULT)
+    print(p.config)
+    m = p.match(o)
+    a = 5  # existing, modified
+    b = 6  # existing, deleted
+    c = 7  # existing, unchanged
+    with m:
+        # pylint: disable=used-before-assignment
+        assert (a, b, c, d, e, f) == (1, 2, 3, 4, 5, 6)
+        a = 6
+        del b
+        d = 1
+        del e
+    assert a == 5
+    assert b == 6
+    assert c == 7
+    assert d == 1
+    with pytest.raises(NameError):
+        print(e)  # works (because e is a global variable)
+    assert f == 6
+
+
+def test_start_end_block_inverse_cfg():
+    """Test _start_block and _end_block (inverse config)."""
+    o = Dummy6(1, 2, 3, 4, 5, 6)
+    p = ObjectPattern(PD6, config=CONFIG_INVERSE)
+    print(p.config)
+    m = p.match(o)
+    a = 5  # existing, modified
+    b = 6  # existing, deleted
+    c = 7  # existing, unchanged
+    with DummyContext() if sys.implementation.name == 'pypy' else pytest.warns(UserWarning):
+        with m:
+            # pylint: disable=used-before-assignment
+            assert (a, b, c, d, e, f) == (1, 2, 3, 4, 5, 6)
+            a = 6
+            del b
+            d = 1
+            del e
+    assert a == 6
+    with pytest.raises(NameError):
+        print(b)
+    assert c == 3
+    if sys.implementation.name == 'pypy':
+        with pytest.raises(NameError):
+            print(d)
+    else:
+        assert d == 1
+    assert e == 5
+    # with pytest.raises(NameError):
+    #     print(f)  # existed in target f_globals?
 
 
 def test_object_pattern_basic():
@@ -41,15 +133,8 @@ def test_object_pattern_basic():
     assert m3 is None
     assert bool(m1)
     assert bool(m2)
-    # print('Before:', inspect.currentframe())
-    # print(id(inspect.currentframe().f_locals))
     with m1:
-        # f = inspect.currentframe()
-        # print('InsideBefore:', f)
-        # print('Inside frame locals', f.f_locals.keys())
-        # print('f_locals id', id(f.f_locals))
         assert 'obj_type' in globals()
-        # print('locals():', locals().keys())
         assert obj_type == type(None)
         assert isinstance(obj_type_str, str)
         assert docstring == None.__doc__
@@ -96,6 +181,7 @@ def test_object_pattern_special_cases():
 
 def test_object_pattern_context_handler():
     class Dummy:
+        # pylint: disable=too-few-public-methods,missing-class-docstring
         def __init__(self, a, b, c, d, e):
             self.a, self.b, self.c, self.d, self.e = a, b, c, d, e
 
@@ -111,27 +197,25 @@ def test_object_pattern_context_handler():
     m = p.match(o)
     a = 'That'
     d = 'smart'
-    # print(set(globals().keys()) & {'a', 'b', 'c', 'd', 'e'})
-    with pytest.warns(UserWarning):
-        with m:
-            # global b, c, e
-            with pytest.raises(UnboundLocalError) as err:
-                print(c)  # pylint: disable=used-before-assignment
-            assert err.value.args[0] == "local variable 'c' referenced before assignment"
-            c = m.bound['c']
-            print(a, b, c, d, e)  # pylint: disable=used-before-assignment
-            c = 'a'
-            a = 'Dis'
-            print(a, b, c, d, e)
-            print('__exit__')
-    with pytest.raises(NameError):
-        print(b)
-    # with pytest.raises(NameError):  # BUG: broken #assignlocal
-    #     print(c)
-    with pytest.raises(NameError):
-        print(e)
-    # assert a == 'That'  # BUG: broken #assignlocal
-    # assert d == 'smart'  # BUG: broken #assignlocal
+    with m:
+        c = m.bound['c']
+        print(a, b, c, d, e)  # pylint: disable=used-before-assignment
+        c = 'a'
+        a = 'Dis'
+        print(a, b, c, d, e)
+        print('__exit__')
+    # NOTE: this works with pypy, but insane defaults have been chosen to
+    #   guarantee consistency across implementations
+    # if sys.implementation.name == 'pypy':
+    #     with pytest.raises(NameError):  # BUG: `del b` does not work
+    #         print(b)
+    #     with pytest.raises(NameError):  # BUG: broken #assignlocal/deletelocal
+    #         print(c)
+    #     with pytest.raises(NameError):
+    #         print(e)
+    assert a == 'That'
+    assert d == 'smart'
+    # TODO: more checks
 
 
 def test_basic_object_multi_pattern():
@@ -209,10 +293,12 @@ def test_context_handler():
     })
     m = p.match({0: 1, 1: 'two', 2: 3.0})
     values = []
-    with pytest.warns(UserWarning):
-        with m:
-            keys = [0, 1, 2]  # BUG: #assignlocal
-            values = [1, 'two', 3.0]
+    with m:
+        assert list(keys) == [0, 1, 2]
+        assert list(values) == [1, 'two', 3.0]
+        with pytest.raises(NameError):
+            # 'items' is in co_consts instead of co_varnames
+            print(eval('items'))  # pylint: disable=eval-used
 
 
 def test_meta_match():
