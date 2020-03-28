@@ -1,5 +1,6 @@
 """Implement basic Object Pattern Matching functionality."""
 import re
+import sys
 import functools
 import typing as T
 from warnings import warn
@@ -8,17 +9,34 @@ import inspect
 from pprint import pformat
 from textwrap import indent
 
+if sys.implementation.name == 'cpython':
+    from ctypes import pythonapi, py_object, c_int
+
+    def locals_to_fast(frame, clear: int = 0, **_):  # pylint: disable=missing-function-docstring
+        pythonapi.PyFrame_LocalsToFast(py_object(frame), c_int(clear))
+elif sys.implementation.name == 'pypy':
+    import __pypy__  # pylint: disable=import-error
+
+    def locals_to_fast(frame, *_, **__):  # pylint: disable=missing-function-docstring
+        __pypy__.locals_to_fast(frame)
+else:
+
+    def locals_to_fast(*_, **__):  # pylint: disable=missing-function-docstring
+        warn('LocalsToFast not defined (unhandled python implementation)')
+
 cproperty = getattr(functools, 'cached_property', property)
 FrameType = inspect.types.FrameType
 
 
 CONFIG = {
     'changed existing': 'restore',  # restore (original value), keep (current value)
-    'changed non-existing': 'delete',  # delete, keep (current value)
+    # 'changed non-existing': 'delete',  # delete, keep (current value)
+    'changed non-existing': 'keep',  # 'delete' would be better, but it does not work atm
     'deleted existing': 'restore',  # restore (original value), ignore
     'deleted non-existing': 'ignore',  # restore (bound value), ignore
     'unchanged existing': 'restore',  # restore (original value), keep (bound value)
-    'unchanged non-existing': 'delete',  # delete, keep (bound value)
+    # 'unchanged non-existing': 'delete',  # delete, keep (bound value)
+    'unchanged non-existing': 'keep',  # 'delete' would be better, but it does not work atm
 }
 
 
@@ -36,16 +54,18 @@ def break_attr_path(path: str):
 def _start_block(frame: FrameType, bind: dict,
                  warn_unused: bool = False) -> T.Tuple[FrameType, dict]:
     """Bind values to the frame scope."""
+    # pylint: disable=too-many-locals
     spec = {k: {'bound_value': v} for k, v in bind.items()}
+    f_locals, f_globals = frame.f_locals, frame.f_globals
     code = frame.f_code
     cv_fast = set(code.co_varnames)  # arguments, locals
     cv_global = set(code.co_names)  # globals
     cv_closure = set(code.co_cellvars)  # this scope and children <-|
     cv_deref = set(code.co_freevars)  # this scope and parents <----|
-    cv_local = cv_fast | cv_closure | cv_deref  # TODO: okay?
-    vars_all = (set(frame.f_locals.keys()) | set(frame.f_globals.keys())
-                | cv_local | cv_global)
+    cv_local = cv_fast | cv_closure | cv_deref
+    vars_all = cv_local | cv_global   # | set(f_locals.keys()) | set(f_globals.keys())
     for varname, value in bind.items():
+        f_locals, f_globals = frame.f_locals, frame.f_globals  # always update
         exists = spec[varname]['exists'] = varname in vars_all
         if not exists:
             if warn_unused:
@@ -54,24 +74,19 @@ def _start_block(frame: FrameType, bind: dict,
         if varname in cv_fast:  # f_local
             spec[varname]['access'] = 'FAST'
             spec[varname]['target'] = 'f_locals'
-            spec[varname]['exists_in_target'] = varname in frame.f_locals
-            spec[varname]['value_in_target'] = frame.f_locals.get(varname)
-            # BUG: broken
-            frame.f_locals[varname] = value
-            # frame.f_locals.update({varname: value})
-            if varname not in frame.f_locals:
-                warn(UserWarning(f'Could not define local variable {varname!r}',
-                                 code))
-            if varname in frame.f_locals and id(frame.f_locals[varname]) != id(value):
-                warn(UserWarning(f'Could not set new value for local variable {varname!r}',
-                                 code))
-            # BUG: only works for initialised values!
+            spec[varname]['exists_in_target'] = varname in f_locals
+            spec[varname]['value_in_target'] = f_locals.get(varname)
+            # BUG: broken?
+            f_locals[varname] = value
+            locals_to_fast(frame)
+            assert varname in frame.f_locals
+            assert id(frame.f_locals[varname]) == id(value)
         elif varname in cv_global:
             spec[varname]['access'] = 'GLOBAL'
             spec[varname]['target'] = 'f_globals'
-            spec[varname]['exists_in_target'] = varname in frame.f_globals
-            spec[varname]['value_in_target'] = frame.f_globals.get(varname)
-            frame.f_globals[varname] = value
+            spec[varname]['exists_in_target'] = varname in f_globals
+            spec[varname]['value_in_target'] = f_globals.get(varname)
+            f_globals[varname] = value
         elif varname in cv_closure:
             raise NotImplementedError('CLOSURE not yet implemented')
         elif varname in cv_deref:
@@ -81,9 +96,10 @@ def _start_block(frame: FrameType, bind: dict,
     return frame, spec
 
 
-def _end_block(frame: FrameType, spec: dict, config: dict):
+def _calculate_actions(spec: dict, config: dict, f_locals: dict, f_globals: dict) -> dict:
+    """Calculate what to do based on spec and config."""
     # pylint: disable=too-many-branches
-    f_locals, f_globals = frame.f_locals, frame.f_globals
+    to_do = {k: {} for k in spec}
     for varname, vspec in spec.items():
         if not vspec['exists']:
             continue
@@ -95,39 +111,68 @@ def _end_block(frame: FrameType, spec: dict, config: dict):
         if deleted:
             if existed_in_target:
                 if config.get('deleted existing', 'restore') == 'restore':
-                    target[varname] = value_1
+                    to_do[varname]['action'] = 'set'
+                    to_do[varname]['value'] = value_1
                 else:
                     pass  # ignore: user does not want the value
             else:
                 if config.get('deleted non-existing', 'ignore') == 'restore':
-                    target[varname] = value_2
+                    to_do[varname]['action'] = 'set'
+                    to_do[varname]['value'] = value_2
                 else:
                     pass  # ignore
         elif modified:
             if existed_in_target:
                 if config.get('changed existing', 'restore') == 'restore':
-                    target[varname] = value_1
+                    to_do[varname]['action'] = 'set'
+                    to_do[varname]['value'] = value_1
                 else:
                     pass  # ignore: user wants to keep the changed value
             else:
                 if config.get('changed non-existing', 'delete') == 'delete':
-                    del target[varname]
+                    to_do[varname]['action'] = 'delete'
                 else:
                     pass  # ignore: keep
         else:  # unmodified, not deleted
             if existed_in_target:
                 if config.get('unchanged existing', 'restore') == 'restore':
-                    target[varname] = value_1
+                    to_do[varname]['action'] = 'set'
+                    to_do[varname]['value'] = value_1
                 else:
                     pass  # ignore: user wants to keep the changed value
             else:
                 if config.get('unchanged non-existing', 'delete') == 'delete':
-                    del target[varname]
+                    to_do[varname]['action'] = 'delete'
                 else:
                     pass  # ignore: keep
+    return to_do
 
-    print({k for k in frame.f_locals if k in spec})
-    print({k for k in frame.f_globals if k in spec})
+
+def _end_block(frame: FrameType, spec: dict, config: dict):
+    code = frame.f_code
+    f_locals, f_globals = frame.f_locals, frame.f_globals
+    to_do = _calculate_actions(spec, config, f_locals, f_globals)
+    for varname, action_spec in to_do.items():
+        f_locals, f_globals = frame.f_locals, frame.f_globals  # always update
+        action = action_spec.get('action')
+        if action == 'set':
+            value = action_spec['value']
+            if spec[varname]['target'] == 'f_globals':
+                f_globals[varname] = value
+            else:
+                f_locals.update({**f_locals, varname: value})
+                locals_to_fast(frame)
+                assert varname in frame.f_locals
+                assert id(frame.f_locals[varname]) == id(value)
+        elif action == 'delete':
+            if spec[varname]['target'] == 'f_globals':
+                del f_globals[varname]
+            else:
+                del f_locals[varname]
+                locals_to_fast(frame)
+                if varname in frame.f_locals:
+                    warn(f'Could not delete {varname!r} ({code.co_filename!r}, '
+                         f'in {code.co_name!r} near line {frame.f_lineno})', stacklevel=2)
 
 
 class NoMatchingPatternError(ValueError):
@@ -267,6 +312,7 @@ class ObjectMultiPattern:
         return len(self) == 1
 
     def __enter__(self):
+        # pylint: disable=attribute-defined-outside-init
         if len(self) > 1:
             if self.allow_ambiguities:
                 warn(f'Ambiguity: {len(self)} patterns matched!')
@@ -275,7 +321,6 @@ class ObjectMultiPattern:
         elif not self:
             raise NoMatchingPatternError(f'{self.obj!r} did not match any pattern!')
         self.match = min(self.successful_matches.items())[1]
-        # W0201: attribute-defined-outside-init
         self.__f, self.__espec = _start_block(inspect.currentframe().f_back,
                                               self.match.bound,
                                               self.config.get('warn: unused', False))
