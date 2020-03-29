@@ -2,7 +2,9 @@
 .ignored/
 run_pytest.py
 basic.py
+
 **/.cov2emacs.log
+**/.coverage*
 
 **/flycheck_*.py
 **/*.py,cover
