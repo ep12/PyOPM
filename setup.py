@@ -41,8 +41,9 @@ setuptools.setup(
         'Topic :: Software Development',
         'Topic :: Software Development :: Libraries',
         'Topic :: Utilities',
-        # 'Typing :: Typed',
-        # 'Programming Language :: Python :: Implementation :: CPython',
+        'Typing :: Typed',
+        'Programming Language :: Python :: Implementation :: CPython',
+        'Programming Language :: Python :: Implementation :: PyPy',
     ],
     python_requires='>=3.6',
 )

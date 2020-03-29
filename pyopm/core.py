@@ -40,7 +40,7 @@ CONFIG = {
 }
 
 
-def break_attr_path(path: str):
+def break_attr_path(path: T.Text) -> T.Tuple[T.Text, ...]:
     """Stupid approach to split an expression into parts."""
     parts, tmp = [], ''
     for x in re.split(r'([\.\[])', path):  # TODO: match parens?
@@ -51,8 +51,8 @@ def break_attr_path(path: str):
     return tuple(parts)
 
 
-def _start_block(frame: FrameType, bind: dict,
-                 warn_unused: bool = False) -> T.Tuple[FrameType, dict]:
+def _start_block(frame: FrameType, bind: T.Dict[str, T.Any],
+                 warn_unused: bool = False) -> T.Tuple[FrameType, T.Dict[str, T.Dict[str, T.Any]]]:
     """Bind values to the frame scope."""
     # pylint: disable=too-many-locals
     spec = {k: {'bound_value': v} for k, v in bind.items()}
@@ -96,7 +96,9 @@ def _start_block(frame: FrameType, bind: dict,
     return frame, spec
 
 
-def _calculate_actions(spec: dict, config: dict, f_locals: dict, f_globals: dict) -> dict:
+def _calculate_actions(spec: T.Dict[str, T.Dict[str, T.Any]], config: T.Dict[str, str],
+                       f_locals: T.Dict[str, T.Any],
+                       f_globals: T.Dict[str, T.Any]) -> T.Dict[str, T.Dict[str, T.Any]]:
     """Calculate what to do based on spec and config."""
     # pylint: disable=too-many-branches
     to_do = {k: {} for k in spec}
@@ -148,7 +150,8 @@ def _calculate_actions(spec: dict, config: dict, f_locals: dict, f_globals: dict
     return to_do
 
 
-def _end_block(frame: FrameType, spec: dict, config: dict):
+def _end_block(frame: FrameType, spec: T.Dict[str, T.Dict[str, T.Any]],
+               config: T.Dict[str, str]) -> None:
     code = frame.f_code
     f_locals, f_globals = frame.f_locals, frame.f_globals
     to_do = _calculate_actions(spec, config, f_locals, f_globals)
@@ -191,27 +194,27 @@ class ObjectPatternMatch:
     """A match corresponding to a (pattern, object) pair."""
 
     def __init__(self, obj: object, pattern: ObjectPattern, bound: dict,
-                 config: T.Optional[dict] = None):
+                 config: T.Optional[T.Dict[str, str]] = None):
         self.obj, self.pattern = obj, pattern
         self.bound = bound
         self.config = config if isinstance(config, dict) else CONFIG
 
-    def __bool__(self):
+    def __bool__(self) -> bool:
         return True
 
-    def __repr__(self):
+    def __repr__(self) -> T.Text:
         return f'ObjectPatternMatch({self.obj!r}, {self.pattern!r}, {self.bound!r})'
 
-    def __str__(self):
+    def __str__(self) -> T.Text:
         return f'<ObjectPatternMatch bindings={self.bound!r}/>'
 
-    def __enter__(self):
+    def __enter__(self) -> None:
         # pylint: disable=attribute-defined-outside-init
         self.__f, self.__espec = _start_block(inspect.currentframe().f_back, self.bound,
                                               self.config.get('warn: unused', False))
         return self
 
-    def __exit__(self, exc_type, exc_value, trb):
+    def __exit__(self, exc_type, exc_value, trb) -> None:
         _end_block(self.__f, self.__espec, self.config)
         del self.__f, self.__espec
         # Do we need to handle exc_type, exc_value, traceback?
@@ -221,26 +224,27 @@ class ObjectPattern:
     """A pattern that can be applied to any object."""
 
     def __init__(self, pattern: dict, verbose: bool = False,
-                 config: T.Optional[dict] = None):
+                 config: T.Optional[T.Dict[str, str]] = None):
         assert isinstance(pattern, dict)
         self.pattern, self.verbose = pattern, verbose
         self.config = config if isinstance(config, dict) else CONFIG
 
-    def __str__(self):
+    def __str__(self) -> T.Text:
         return ('<ObjectPattern \n'
                 + indent(pformat(self.pattern, width=76), ' ' * 4)
                 + '\n/>')
 
-    def __repr__(self):
+    def __repr__(self) -> T.Text:
         return f'<ObjectPattern({pformat(self.pattern)}) />'
 
     @cproperty
-    def compiled_pattern(self):
+    def compiled_pattern(self) -> dict:
         """Split the keys into attribute path bits."""
         return {break_attr_path(k): v for k, v in self.pattern.items()}
 
     def match(self, obj: object,
-              eval_globals: dict = None, eval_locals: dict = None):
+              eval_globals: dict = None,
+              eval_locals: dict = None) -> T.Optional[ObjectPatternMatch]:
         # pylint: disable=too-many-locals
         """Apply the pattern to obj."""
         verbose = self.verbose
@@ -289,7 +293,7 @@ class ObjectMultiPattern:
     """Implement matching against multiple patterns functionality."""
     # TODO: match method?
 
-    def __init__(self, obj: object, *patterns: ObjectPattern,
+    def __init__(self, obj: object, *patterns: T.Iterable[ObjectPattern],
                  allow_ambiguities: bool = False, config: T.Optional[dict] = None,
                  **match_args):
         self.obj = obj
@@ -300,18 +304,18 @@ class ObjectMultiPattern:
         self.config = config if isinstance(config, dict) else CONFIG
 
     @cproperty
-    def successful_matches(self):
+    def successful_matches(self) -> T.Dict[int, T.Union[ObjectPatternMatch, None]]:
         """A dictionary containing all the successfull matches."""
         return dict(filter(lambda t: isinstance(t[1], ObjectPatternMatch),
                            enumerate(self.matches)))
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.successful_matches)
 
-    def __bool__(self):
+    def __bool__(self) -> bool:
         return len(self) == 1
 
-    def __enter__(self):
+    def __enter__(self) -> None:
         # pylint: disable=attribute-defined-outside-init
         if len(self) > 1:
             if self.allow_ambiguities:
@@ -326,7 +330,7 @@ class ObjectMultiPattern:
                                               self.config.get('warn: unused', False))
         return self
 
-    def __exit__(self, exc_type, exc_value, trb):
+    def __exit__(self, exc_type, exc_value, trb) -> None:
         _end_block(self.__f, self.__espec, self.config)
         del self.__f, self.__espec
         # Do we need to handle exc_type, exc_value, traceback?
