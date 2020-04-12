@@ -81,7 +81,7 @@ def _start_block(frame: FrameType, bind: T.Dict[str, T.Any],
             spec[varname]['target'] = 'f_locals'
             spec[varname]['exists_in_target'] = varname in f_locals
             spec[varname]['value_in_target'] = f_locals.get(varname)
-            f_locals[varname] = value  # BUG: broken?
+            f_locals[varname] = value  # broken?
             locals_to_fast(frame)
             assert varname in frame.f_locals
             assert id(frame.f_locals[varname]) == id(value)
@@ -91,9 +91,9 @@ def _start_block(frame: FrameType, bind: T.Dict[str, T.Any],
             spec[varname]['exists_in_target'] = varname in f_globals
             spec[varname]['value_in_target'] = f_globals.get(varname)
             f_globals[varname] = value
-        elif varname in cv_closure:
+        elif varname in cv_closure or varname in cv_deref:
             # TODO: double check that code below!
-            spec[varname]['access'] = 'CLOSURE'
+            m = spec[varname]['access'] = 'CLOSURE' if varname in cv_closure else 'DEREF'
             if varname in f_locals:
                 spec[varname]['target'] = 'f_locals'
                 spec[varname]['exists_in_target'] = varname in f_locals
@@ -102,23 +102,18 @@ def _start_block(frame: FrameType, bind: T.Dict[str, T.Any],
                 locals_to_fast(frame)
                 assert varname in frame.f_locals
                 assert id(frame.f_locals[varname]) == id(value)
-            elif varname in f_globals:
+            elif varname in f_globals:  # Uncovered. Maybe unnecessary?
                 spec[varname]['target'] = 'f_globals'
                 spec[varname]['exists_in_target'] = varname in f_globals
                 spec[varname]['value_in_target'] = f_globals.get(varname)
                 f_globals[varname] = value
                 assert varname in frame.f_globals
                 assert id(frame.f_globals[varname]) == id(value)
-            else:
+            else:  # Uncovered. Maybe unnecessary?
                 print('f_locals:  ', f_locals.keys(), file=sys.stderr)
                 print('f_globals: ', f_locals.keys(), file=sys.stderr)
-                raise NotImplementedError(f'access method CLOSURE, but {varname!r} is not in'
+                raise NotImplementedError(f'access method {m}, but {varname!r} is not in '
                                           'f_locals or f_globals')
-        elif varname in cv_deref:
-            # TODO:
-            print('f_locals:  ', f_locals.keys())
-            print('f_globals: ', f_locals.keys())
-            raise NotImplementedError(f'DEREF not yet implemented: {varname}')
         else:
             raise NotImplementedError('unknown access not yet implemented')
     return frame, spec
@@ -172,7 +167,7 @@ def _calculate_actions(spec: T.Dict[str, T.Dict[str, T.Any]], config: T.Dict[str
                     pass  # ignore: user wants to keep the changed value
             else:
                 if config.get('unchanged non-existing', 'delete') == 'delete':
-                    to_do[varname]['action'] = 'delete'
+                    to_do[varname]['action'] = 'delete'  # uncovered?
                 else:
                     pass  # ignore: keep
     return to_do
@@ -197,7 +192,7 @@ def _end_block(frame: FrameType, spec: T.Dict[str, T.Dict[str, T.Any]],
                 assert id(frame.f_locals[varname]) == id(value)
         elif action == 'delete':
             if spec[varname]['target'] == 'f_globals':
-                del f_globals[varname]
+                del f_globals[varname]  # uncovered?
             else:
                 del f_locals[varname]
                 locals_to_fast(frame)

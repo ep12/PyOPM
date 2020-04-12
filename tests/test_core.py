@@ -2,7 +2,7 @@
 import re
 import os
 import sys
-# import dis
+import dis
 
 import pytest
 
@@ -127,6 +127,23 @@ def test_start_end_block_closure():
         assert tup1 == (1, 2, 3, 4, 5, 6)
     tup2 = myfunc()
     assert tup2 == (5, 6, 7, 4, 5, 6)
+
+
+def test_start_end_block_deref():
+    o = Dummy6(1, 2, 3, 4, 5, 6)
+    p = ObjectPattern(PD6, config=CONFIG_DEFAULT)
+    m = p.match(o)
+
+    a, b, c = 5, 6, 7
+    def closure():
+        nonlocal b
+        with m:
+            assert (a, b, c) == (1, 2, 3)
+        b = 42
+        return a
+    closure()
+    assert (a, b, c) == (5, 42, 7)
+    assert (d, e, f) == (4, 5, 6)
 
 
 def test_object_pattern_basic():
