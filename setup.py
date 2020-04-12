@@ -11,7 +11,10 @@ setuptools.setup(
     description='Object Pattern Matching for Python 3',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    url='https://github.com/ep12/PyOPM',
+    project_urls={
+        'GitHub': 'https://github.com/ep12/PyOPM',
+        'Documentation': 'https://github.com/ep12/PyOPM/wiki',
+    },
     packages=setuptools.find_packages(),
     license='GNU LGPL v3',
     keywords=[
