@@ -3,6 +3,7 @@ import re
 import sys
 import functools
 import typing as T
+from types import CodeType, FrameType  # , CellType
 from warnings import warn
 import inspect
 
@@ -25,8 +26,6 @@ else:
         warn('LocalsToFast not defined (unhandled python implementation)')
 
 cproperty = getattr(functools, 'cached_property', property)
-FrameType = inspect.types.FrameType
-
 
 CONFIG = {
     'changed existing': 'restore',  # restore (original value), keep (current value)
@@ -63,21 +62,26 @@ def _start_block(frame: FrameType, bind: T.Dict[str, T.Any],
     cv_closure = set(code.co_cellvars)  # this scope and children <-|
     cv_deref = set(code.co_freevars)  # this scope and parents <----|
     cv_local = cv_fast | cv_closure | cv_deref
-    vars_all = cv_local | cv_global   # | set(f_locals.keys()) | set(f_globals.keys())
+    vars_all = cv_local | cv_global  # | set(f_locals.keys()) | set(f_globals.keys())
     for varname, value in bind.items():
         f_locals, f_globals = frame.f_locals, frame.f_globals  # always update
         exists = spec[varname]['exists'] = varname in vars_all
         if not exists:
-            if warn_unused:
-                warn(f'Unused variable: {varname!r}')
-            continue  # not used, no need to bind it
+            # TODO:
+            # NOTE: This value will be bound, but it will not be removed later
+            #       (if it did not exist only???)
+            spec[varname]['access'] = 'GLOBAL_UNBOUND'
+            spec[varname]['target'] = 'f_globals'
+            spec[varname]['exists_in_target'] = varname in f_globals
+            spec[varname]['value_in_target'] = f_globals.get(varname)
+            f_globals[varname] = value
+            continue
         if varname in cv_fast:  # f_local
             spec[varname]['access'] = 'FAST'
             spec[varname]['target'] = 'f_locals'
             spec[varname]['exists_in_target'] = varname in f_locals
             spec[varname]['value_in_target'] = f_locals.get(varname)
-            # BUG: broken?
-            f_locals[varname] = value
+            f_locals[varname] = value  # BUG: broken?
             locals_to_fast(frame)
             assert varname in frame.f_locals
             assert id(frame.f_locals[varname]) == id(value)
@@ -88,9 +92,33 @@ def _start_block(frame: FrameType, bind: T.Dict[str, T.Any],
             spec[varname]['value_in_target'] = f_globals.get(varname)
             f_globals[varname] = value
         elif varname in cv_closure:
-            raise NotImplementedError('CLOSURE not yet implemented')
+            # TODO: double check that code below!
+            spec[varname]['access'] = 'CLOSURE'
+            if varname in f_locals:
+                spec[varname]['target'] = 'f_locals'
+                spec[varname]['exists_in_target'] = varname in f_locals
+                spec[varname]['value_in_target'] = f_locals.get(varname)
+                f_locals[varname] = value
+                locals_to_fast(frame)
+                assert varname in frame.f_locals
+                assert id(frame.f_locals[varname]) == id(value)
+            elif varname in f_globals:
+                spec[varname]['target'] = 'f_globals'
+                spec[varname]['exists_in_target'] = varname in f_globals
+                spec[varname]['value_in_target'] = f_globals.get(varname)
+                f_globals[varname] = value
+                assert varname in frame.f_globals
+                assert id(frame.f_globals[varname]) == id(value)
+            else:
+                print('f_locals:  ', f_locals.keys(), file=sys.stderr)
+                print('f_globals: ', f_locals.keys(), file=sys.stderr)
+                raise NotImplementedError(f'access method CLOSURE, but {varname!r} is not in'
+                                          'f_locals or f_globals')
         elif varname in cv_deref:
-            raise NotImplementedError('DEREF not yet implemented')
+            # TODO:
+            print('f_locals:  ', f_locals.keys())
+            print('f_globals: ', f_locals.keys())
+            raise NotImplementedError(f'DEREF not yet implemented: {varname}')
         else:
             raise NotImplementedError('unknown access not yet implemented')
     return frame, spec

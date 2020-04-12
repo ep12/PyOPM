@@ -1,9 +1,10 @@
 # pylint: disable=undefined-variable,import-error,
 import re
-import pytest
-
 import os
 import sys
+# import dis
+
+import pytest
 
 # make sure to import the version of PyOPM found in ./
 # instead of importing a stable version from /.../site-packages/
@@ -109,6 +110,23 @@ def test_start_end_block_inverse_cfg():
     assert e == 5
     # with pytest.raises(NameError):
     #     print(f)  # existed in target f_globals?
+
+
+def test_start_end_block_closure():
+    o = Dummy6(1, 2, 3, 4, 5, 6)
+    p = ObjectPattern(PD6, config=CONFIG_DEFAULT)
+    m = p.match(o)
+    a = 5
+    b = 6
+    c = 7
+    with m:
+        # pylint: disable=used-before-assignment
+        def myfunc():
+            return a, b, c, d, e, f
+        tup1 = myfunc()
+        assert tup1 == (1, 2, 3, 4, 5, 6)
+    tup2 = myfunc()
+    assert tup2 == (5, 6, 7, 4, 5, 6)
 
 
 def test_object_pattern_basic():
@@ -296,10 +314,10 @@ def test_context_handler():
     with m:
         assert list(keys) == [0, 1, 2]
         assert list(values) == [1, 'two', 3.0]
-        with pytest.raises(NameError):
-            # 'items' is in co_consts instead of co_varnames
-            print(eval('items'))  # pylint: disable=eval-used
-
+        # with pytest.raises(NameError):
+        #     # 'items' is in co_consts instead of co_varnames
+        #     print(eval('items'))  # pylint: disable=eval-used
+        assert list(eval('items')) == [(0, 1), (1, 'two'), (2, 3.0)]
 
 def test_meta_match():
     """Test the matcher_pattern."""
